@@ -1,0 +1,816 @@
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import {
+  LineChart,
+  Line,
+  BarChart,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  Radar,
+} from "recharts";
+import { fetchRecalls } from "../services/api";
+import type { Recall } from "../services/api";
+
+const COLORS = {
+  critical: "#b91c1c",
+  high: "#ea580c",
+  medium: "#ca8a04",
+  low: "#2563eb",
+  food: "#16a34a",
+  nonFood: "#6b7280",
+};
+
+const CATEGORY_COLORS = [
+  "#3b82f6", "#8b5cf6", "#ec4899", "#f59e0b", "#10b981",
+  "#6366f1", "#f43f5e", "#14b8a6", "#f97316", "#a855f7"
+];
+
+export function Statistics() {
+  const [recalls, setRecalls] = useState<Recall[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // L'API a une limite de 100 résultats par requête
+        // On fait 15 appels pour récupérer 1500 rappels (plusieurs années de données)
+        const allRecalls: Recall[] = [];
+        const callsToMake = 15; // 15 appels × 100 = 1500 résultats
+
+        for (let i = 0; i < callsToMake; i++) {
+          const { recalls: data } = await fetchRecalls({
+            limit: 100,
+            offset: i * 100,
+          });
+          allRecalls.push(...data);
+
+          // Si on reçoit moins de 100 résultats, on a atteint la fin
+          if (data.length < 100) break;
+        }
+
+        setRecalls(allRecalls);
+      } catch (error) {
+        console.error("Erreur lors du chargement des données:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, []);
+
+  // Calculs KPIs
+  const getKPIs = () => {
+    if (recalls.length === 0) return null;
+
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const sixtyDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+
+    const last30Days = recalls.filter(
+      (r) => new Date(r.recallDate) >= thirtyDaysAgo
+    ).length;
+
+    const previous30Days = recalls.filter(
+      (r) =>
+        new Date(r.recallDate) >= sixtyDaysAgo &&
+        new Date(r.recallDate) < thirtyDaysAgo
+    ).length;
+
+    const trendPercentage =
+      previous30Days > 0
+        ? ((last30Days - previous30Days) / previous30Days) * 100
+        : 0;
+
+    const criticalCount = recalls.filter((r) => r.riskLevel === "critical")
+      .length;
+    const criticalPercentage = (criticalCount / recalls.length) * 100;
+
+    // Calculer la moyenne par mois
+    const oldestDate = new Date(
+      Math.min(...recalls.map((r) => new Date(r.recallDate).getTime()))
+    );
+    const monthsDiff =
+      (now.getTime() - oldestDate.getTime()) / (1000 * 60 * 60 * 24 * 30);
+    const avgPerMonth = recalls.length / monthsDiff;
+
+    // Top catégorie
+    const categoryStats: Record<string, number> = {};
+    recalls.forEach((r) => {
+      categoryStats[r.category] = (categoryStats[r.category] || 0) + 1;
+    });
+    const topCategory = Object.entries(categoryStats).sort(
+      (a, b) => b[1] - a[1]
+    )[0];
+
+    return {
+      total: recalls.length,
+      last30Days,
+      trendPercentage,
+      criticalPercentage,
+      avgPerMonth,
+      topCategory: topCategory ? topCategory[0] : "N/A",
+      topCategoryCount: topCategory ? topCategory[1] : 0,
+    };
+  };
+
+  // Graphique: Évolution mensuelle
+  const getMonthlyRecalls = () => {
+    const monthlyData: Record<string, { count: number; date: Date }> = {};
+
+    recalls.forEach((recall) => {
+      const date = new Date(recall.recallDate);
+      const monthYear = `${date.toLocaleString("fr-FR", {
+        month: "short",
+      })} ${date.getFullYear()}`;
+
+      if (!monthlyData[monthYear]) {
+        monthlyData[monthYear] = { count: 0, date };
+      }
+      monthlyData[monthYear].count++;
+    });
+
+    return Object.entries(monthlyData)
+      .map(([month, data]) => ({
+        mois: month,
+        rappels: data.count,
+        sortDate: data.date.getTime(),
+      }))
+      .sort((a, b) => a.sortDate - b.sortDate)
+      .slice(-18) // 18 derniers mois
+      .map(({ mois, rappels }) => ({ mois, rappels }));
+  };
+
+  // Graphique: Évolution par niveau de risque
+  const getRiskEvolution = () => {
+    const monthlyRiskData: Record<
+      string,
+      { critical: number; high: number; medium: number; low: number; date: Date }
+    > = {};
+
+    recalls.forEach((recall) => {
+      const date = new Date(recall.recallDate);
+      const monthYear = `${date.toLocaleString("fr-FR", {
+        month: "short",
+      })} ${date.getFullYear()}`;
+
+      if (!monthlyRiskData[monthYear]) {
+        monthlyRiskData[monthYear] = { critical: 0, high: 0, medium: 0, low: 0, date };
+      }
+
+      monthlyRiskData[monthYear][recall.riskLevel]++;
+    });
+
+    return Object.entries(monthlyRiskData)
+      .map(([month, data]) => ({
+        mois: month,
+        "Danger critique": data.critical,
+        "Risque élevé": data.high,
+        Attention: data.medium,
+        Information: data.low,
+        sortDate: data.date.getTime(),
+      }))
+      .sort((a, b) => a.sortDate - b.sortDate)
+      .slice(-18) // 18 derniers mois
+      .map(({ mois, ...rest }) => {
+        const { sortDate, ...risks } = rest;
+        return { mois, ...risks };
+      });
+  };
+
+  // Graphique: Top catégories détaillé
+  const getTopCategories = (limit: number = 15) => {
+    const categoryStats: Record<string, number> = {};
+
+    recalls.forEach((recall) => {
+      categoryStats[recall.category] = (categoryStats[recall.category] || 0) + 1;
+    });
+
+    return Object.entries(categoryStats)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, limit)
+      .map(([category, count]) => ({
+        catégorie: category.length > 25 ? category.substring(0, 25) + "..." : category,
+        rappels: count,
+        pourcentage: ((count / recalls.length) * 100).toFixed(1),
+      }));
+  };
+
+  // Graphique: Top marques
+  const getTopBrands = () => {
+    const brandStats: Record<string, number> = {};
+
+    recalls.forEach((recall) => {
+      brandStats[recall.brand] = (brandStats[recall.brand] || 0) + 1;
+    });
+
+    return Object.entries(brandStats)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([brand, count]) => ({
+        marque: brand.length > 20 ? brand.substring(0, 20) + "..." : brand,
+        rappels: count,
+      }));
+  };
+
+  // Graphique: Aliments vs Non-Aliments
+  const getFoodVsNonFood = () => {
+    const foodCategories = [
+      "alimentation",
+      "boulangerie",
+      "charcuterie",
+      "produits laitiers",
+      "viandes",
+      "poissons",
+      "fruits et légumes",
+      "boissons",
+      "épicerie",
+    ];
+
+    let foodCount = 0;
+    let nonFoodCount = 0;
+
+    recalls.forEach((recall) => {
+      const isFood = foodCategories.some((cat) =>
+        recall.category.toLowerCase().includes(cat.toLowerCase())
+      );
+
+      if (isFood) {
+        foodCount++;
+      } else {
+        nonFoodCount++;
+      }
+    });
+
+    return [
+      {
+        name: "Alimentaire",
+        value: foodCount,
+        color: COLORS.food,
+        pourcentage: ((foodCount / recalls.length) * 100).toFixed(1),
+      },
+      {
+        name: "Non-alimentaire",
+        value: nonFoodCount,
+        color: COLORS.nonFood,
+        pourcentage: ((nonFoodCount / recalls.length) * 100).toFixed(1),
+      },
+    ];
+  };
+
+  // Graphique: Répartition par niveau de risque
+  const getRiskDistribution = () => {
+    const riskStats = {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+    };
+
+    recalls.forEach((recall) => {
+      riskStats[recall.riskLevel]++;
+    });
+
+    return [
+      {
+        name: "Danger critique",
+        value: riskStats.critical,
+        color: COLORS.critical,
+        pourcentage: ((riskStats.critical / recalls.length) * 100).toFixed(1),
+      },
+      {
+        name: "Risque élevé",
+        value: riskStats.high,
+        color: COLORS.high,
+        pourcentage: ((riskStats.high / recalls.length) * 100).toFixed(1),
+      },
+      {
+        name: "Attention",
+        value: riskStats.medium,
+        color: COLORS.medium,
+        pourcentage: ((riskStats.medium / recalls.length) * 100).toFixed(1),
+      },
+      {
+        name: "Information",
+        value: riskStats.low,
+        color: COLORS.low,
+        pourcentage: ((riskStats.low / recalls.length) * 100).toFixed(1),
+      },
+    ];
+  };
+
+  // Graphique: Comparaison année par année
+  const getYearlyComparison = () => {
+    const yearlyData: Record<string, number> = {};
+
+    recalls.forEach((recall) => {
+      const year = new Date(recall.recallDate).getFullYear();
+      yearlyData[year] = (yearlyData[year] || 0) + 1;
+    });
+
+    return Object.entries(yearlyData)
+      .map(([year, count]) => ({
+        année: year,
+        rappels: count,
+      }))
+      .sort((a, b) => parseInt(a.année) - parseInt(b.année));
+  };
+
+  // Graphique: Répartition par jour de la semaine
+  const getWeekdayDistribution = () => {
+    const weekdayData: Record<number, number> = {};
+    const weekdayNames = ["Dim", "Lun", "Mar", "Mer", "Jeu", "Ven", "Sam"];
+
+    recalls.forEach((recall) => {
+      const day = new Date(recall.recallDate).getDay();
+      weekdayData[day] = (weekdayData[day] || 0) + 1;
+    });
+
+    return weekdayNames.map((name, index) => ({
+      jour: name,
+      rappels: weekdayData[index] || 0,
+    }));
+  };
+
+  // Analyse radar par catégorie et risque
+  const getRadarData = () => {
+    const topCategories = getTopCategories(6);
+
+    return topCategories.map((cat) => {
+      const categoryRecalls = recalls.filter((r) =>
+        r.category.includes(cat.catégorie.replace("...", ""))
+      );
+
+      const critical = categoryRecalls.filter((r) => r.riskLevel === "critical").length;
+      const high = categoryRecalls.filter((r) => r.riskLevel === "high").length;
+      const medium = categoryRecalls.filter((r) => r.riskLevel === "medium").length;
+
+      return {
+        catégorie: cat.catégorie,
+        critique: critical,
+        élevé: high,
+        moyen: medium,
+      };
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-4 border-gray-900 mx-auto mb-4"></div>
+          <p className="text-gray-600 font-medium">Chargement des statistiques...</p>
+        </div>
+      </div>
+    );
+  }
+
+  const kpis = getKPIs();
+  const monthlyData = getMonthlyRecalls();
+  const riskEvolution = getRiskEvolution();
+  const topCategories = getTopCategories();
+  const topBrands = getTopBrands();
+  const foodVsNonFood = getFoodVsNonFood();
+  const riskDistribution = getRiskDistribution();
+  const yearlyComparison = getYearlyComparison();
+  const weekdayDistribution = getWeekdayDistribution();
+  const radarData = getRadarData();
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 py-12">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        {/* En-tête */}
+        <div className="mb-8">
+          <h1 className="text-4xl font-bold text-gray-900 mb-2">
+            Tableau de bord statistique
+          </h1>
+          <p className="text-lg text-gray-600">
+            Analyse détaillée de {recalls.length} rappels de produits
+          </p>
+        </div>
+
+        {/* KPIs Cards */}
+        {kpis && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            {/* Total rappels */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-medium text-gray-600">Total rappels</h3>
+                <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
+                  <svg className="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                </div>
+              </div>
+              <p className="text-3xl font-bold text-gray-900">{kpis.total}</p>
+              <p className="text-xs text-gray-500 mt-1">Produits rappelés</p>
+            </div>
+
+            {/* 30 derniers jours */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-medium text-gray-600">30 derniers jours</h3>
+                <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
+                  <svg className="w-6 h-6 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </div>
+              </div>
+              <p className="text-3xl font-bold text-gray-900">{kpis.last30Days}</p>
+              <div className="flex items-center mt-1">
+                <span
+                  className={`text-xs font-medium ${
+                    kpis.trendPercentage >= 0 ? "text-red-600" : "text-green-600"
+                  }`}
+                >
+                  {kpis.trendPercentage >= 0 ? "+" : ""}
+                  {kpis.trendPercentage.toFixed(1)}%
+                </span>
+                <span className="text-xs text-gray-500 ml-1">vs mois précédent</span>
+              </div>
+            </div>
+
+            {/* Taux critique */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-medium text-gray-600">Taux critique</h3>
+                <div className="w-10 h-10 bg-red-100 rounded-lg flex items-center justify-center">
+                  <svg className="w-6 h-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+              </div>
+              <p className="text-3xl font-bold text-gray-900">
+                {kpis.criticalPercentage.toFixed(1)}%
+              </p>
+              <p className="text-xs text-gray-500 mt-1">Rappels critiques</p>
+            </div>
+
+            {/* Moyenne mensuelle */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-medium text-gray-600">Moyenne mensuelle</h3>
+                <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
+                  <svg className="w-6 h-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                  </svg>
+                </div>
+              </div>
+              <p className="text-3xl font-bold text-gray-900">
+                {kpis.avgPerMonth.toFixed(0)}
+              </p>
+              <p className="text-xs text-gray-500 mt-1">Rappels/mois</p>
+            </div>
+          </div>
+        )}
+
+        {/* Section 1: Évolution temporelle */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Évolution temporelle</h2>
+          <div className="grid md:grid-cols-2 gap-6">
+            {/* Évolution mensuelle */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Rappels par mois (12 derniers mois)
+              </h3>
+              <ResponsiveContainer width="100%" height={300}>
+                <AreaChart data={monthlyData}>
+                  <defs>
+                    <linearGradient id="colorRappels" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#1f2937" stopOpacity={0.8} />
+                      <stop offset="95%" stopColor="#1f2937" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="mois" tick={{ fontSize: 12 }} />
+                  <YAxis />
+                  <Tooltip />
+                  <Area
+                    type="monotone"
+                    dataKey="rappels"
+                    stroke="#1f2937"
+                    fillOpacity={1}
+                    fill="url(#colorRappels)"
+                    name="Rappels"
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Comparaison annuelle */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Comparaison par année
+              </h3>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={yearlyComparison}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="année" />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="rappels" fill="#6366f1" name="Nombre de rappels" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 2: Analyse par risque */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Analyse par niveau de risque</h2>
+          <div className="grid md:grid-cols-2 gap-6">
+            {/* Répartition des risques */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Répartition par niveau de risque
+              </h3>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={riskDistribution}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ name, pourcentage }) => `${name}: ${pourcentage}%`}
+                    outerRadius={100}
+                    fill="#8884d8"
+                    dataKey="value"
+                  >
+                    {riskDistribution.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Évolution des risques */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Évolution par niveau de risque
+              </h3>
+              <ResponsiveContainer width="100%" height={300}>
+                <LineChart data={riskEvolution}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="mois" tick={{ fontSize: 10 }} />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="Danger critique"
+                    stroke={COLORS.critical}
+                    strokeWidth={2}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="Risque élevé"
+                    stroke={COLORS.high}
+                    strokeWidth={2}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="Attention"
+                    stroke={COLORS.medium}
+                    strokeWidth={2}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="Information"
+                    stroke={COLORS.low}
+                    strokeWidth={2}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 3: Analyse par catégorie */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Analyse par catégorie</h2>
+          <div className="grid md:grid-cols-2 gap-6">
+            {/* Top catégories */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Top 15 catégories les plus touchées
+              </h3>
+              <ResponsiveContainer width="100%" height={500}>
+                <BarChart data={topCategories} layout="vertical">
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" />
+                  <YAxis dataKey="catégorie" type="category" width={120} tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Bar dataKey="rappels" name="Nombre de rappels">
+                    {topCategories.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={CATEGORY_COLORS[index % CATEGORY_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Aliments vs Non-aliments */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Alimentaire vs Non-alimentaire
+              </h3>
+              <ResponsiveContainer width="100%" height={300}>
+                <PieChart>
+                  <Pie
+                    data={foodVsNonFood}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    label={({ name, pourcentage }) => `${name}: ${pourcentage}%`}
+                    outerRadius={100}
+                    fill="#8884d8"
+                    dataKey="value"
+                  >
+                    {foodVsNonFood.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.color} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+
+              {/* Radar chart */}
+              <div className="mt-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                  Analyse risque par catégorie (Top 6)
+                </h3>
+                <ResponsiveContainer width="100%" height={300}>
+                  <RadarChart data={radarData}>
+                    <PolarGrid />
+                    <PolarAngleAxis dataKey="catégorie" tick={{ fontSize: 10 }} />
+                    <PolarRadiusAxis />
+                    <Radar
+                      name="Critique"
+                      dataKey="critique"
+                      stroke={COLORS.critical}
+                      fill={COLORS.critical}
+                      fillOpacity={0.6}
+                    />
+                    <Radar
+                      name="Élevé"
+                      dataKey="élevé"
+                      stroke={COLORS.high}
+                      fill={COLORS.high}
+                      fillOpacity={0.6}
+                    />
+                    <Radar
+                      name="Moyen"
+                      dataKey="moyen"
+                      stroke={COLORS.medium}
+                      fill={COLORS.medium}
+                      fillOpacity={0.6}
+                    />
+                    <Legend />
+                    <Tooltip />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 4: Autres analyses */}
+        <div className="mb-8">
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">Analyses complémentaires</h2>
+          <div className="grid md:grid-cols-2 gap-6">
+            {/* Top marques */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Top 10 marques les plus touchées
+              </h3>
+              <ResponsiveContainer width="100%" height={350}>
+                <BarChart data={topBrands} layout="vertical">
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis type="number" />
+                  <YAxis dataKey="marque" type="category" width={130} />
+                  <Tooltip />
+                  <Bar dataKey="rappels" fill="#f59e0b" name="Nombre de rappels" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* Jours de la semaine */}
+            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Répartition par jour de publication
+              </h3>
+              <ResponsiveContainer width="100%" height={350}>
+                <BarChart data={weekdayDistribution}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="jour" />
+                  <YAxis />
+                  <Tooltip />
+                  <Legend />
+                  <Bar dataKey="rappels" fill="#10b981" name="Nombre de rappels" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+
+        {/* Insights clés */}
+        {kpis && (
+          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl shadow-sm border border-blue-200 p-8 mb-8">
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">Points clés à retenir</h2>
+            <div className="grid md:grid-cols-2 gap-6">
+              <div className="bg-white rounded-lg p-4 shadow-sm">
+                <h3 className="font-semibold text-gray-900 mb-2">Catégorie la plus touchée</h3>
+                <p className="text-gray-700">
+                  <span className="text-2xl font-bold text-blue-600">{kpis.topCategory}</span>
+                </p>
+                <p className="text-sm text-gray-600 mt-1">
+                  avec {kpis.topCategoryCount} rappels
+                </p>
+              </div>
+
+              <div className="bg-white rounded-lg p-4 shadow-sm">
+                <h3 className="font-semibold text-gray-900 mb-2">Tendance récente</h3>
+                <p className="text-gray-700">
+                  <span
+                    className={`text-2xl font-bold ${
+                      kpis.trendPercentage >= 0 ? "text-red-600" : "text-green-600"
+                    }`}
+                  >
+                    {kpis.trendPercentage >= 0 ? "Hausse" : "Baisse"}
+                  </span>
+                </p>
+                <p className="text-sm text-gray-600 mt-1">
+                  de {Math.abs(kpis.trendPercentage).toFixed(1)}% sur 30 jours
+                </p>
+              </div>
+
+              <div className="bg-white rounded-lg p-4 shadow-sm">
+                <h3 className="font-semibold text-gray-900 mb-2">Type dominant</h3>
+                <p className="text-gray-700">
+                  <span className="text-2xl font-bold text-green-600">
+                    {foodVsNonFood[0].name}
+                  </span>
+                </p>
+                <p className="text-sm text-gray-600 mt-1">
+                  représente {foodVsNonFood[0].pourcentage}% des rappels
+                </p>
+              </div>
+
+              <div className="bg-white rounded-lg p-4 shadow-sm">
+                <h3 className="font-semibold text-gray-900 mb-2">Niveau de gravité</h3>
+                <p className="text-gray-700">
+                  <span className="text-2xl font-bold text-red-600">
+                    {kpis.criticalPercentage.toFixed(1)}%
+                  </span>
+                </p>
+                <p className="text-sm text-gray-600 mt-1">
+                  de rappels critiques
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Retour */}
+        <div className="text-center">
+          <Link
+            to="/"
+            className="inline-flex items-center px-6 py-3 bg-gray-900 text-white font-medium rounded-lg hover:bg-gray-800 transition-colors shadow-sm"
+          >
+            <svg
+              className="w-5 h-5 mr-2"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M10 19l-7-7m0 0l7-7m-7 7h18"
+              />
+            </svg>
+            Retour à l'accueil
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
